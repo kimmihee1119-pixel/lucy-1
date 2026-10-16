@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>음성 → 영어 번역 → 음성 출력</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    margin: 0; padding: 24px; background: #0f1115; color: #e6e8ec;
+    display: flex; justify-content: center;
+  }
+  .wrap { width: 100%; max-width: 1000px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { font-size: 13px; color: #9aa1ad; margin-bottom: 20px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  button {
+    border: 0; border-radius: 8px; padding: 10px 16px; font-size: 14px;
+    font-weight: 600; cursor: pointer; transition: opacity .15s;
+  }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #start { background: #3b82f6; color: #fff; }
+  #stop  { background: #ef4444; color: #fff; }
+  #clear, #copySrc, #copyEn, #replay, #shutup { background: #2a2f3a; color: #e6e8ec; }
+  select {
+    background: #2a2f3a; color: #e6e8ec; border: 1px solid #3a414f;
+    border-radius: 8px; padding: 9px 10px; font-size: 14px; max-width: 220px;
+  }
+  label.chk { font-size: 13px; color: #9aa1ad; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { width: 110px; vertical-align: middle; }
+  .statusrow { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .pill { font-size: 12.5px; padding: 7px 12px; border-radius: 6px; background: #1a1e26; color: #9aa1ad; }
+  .pill.rec { background: #2a1416; color: #ff8d8d; }
+  .pill.ok  { background: #10231a; color: #6ee7a8; }
+  .pill.warn{ background: #2a2212; color: #fbbf72; }
+  .pill.spk { background: #142033; color: #7db8ff; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  .panel h2 { font-size: 13px; font-weight: 600; color: #9aa1ad; margin: 0 0 6px; }
+  .box {
+    width: 100%; min-height: 290px; padding: 16px; font-size: 16px; line-height: 1.75;
+    background: #161a21; border: 1px solid #272d38; border-radius: 10px;
+    color: #e6e8ec; white-space: pre-wrap; overflow-y: auto; max-height: 54vh;
+  }
+  .box.en { border-color: #24405f; background: #121a24; }
+  .interim { color: #7c8699; font-style: italic; }
+  .pending { color: #6b7280; }
+  .speaking { background: #1d3557; border-radius: 3px; }
+  .meta { font-size: 12px; color: #6b7280; margin-top: 10px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>음성 → 영어 번역 → 음성 출력</h1>
+  <div class="sub">Web Speech API · 내장 Translator · SpeechSynthesis — 외부 서버/키 없음</div>
+
+  <div class="bar">
+    <button id="start">● 녹음 시작</button>
+    <button id="stop" disabled>■ 중지</button>
+    <select id="lang">
+      <option value="ko-KR" data-src="ko">한국어</option>
+      <option value="ja-JP" data-src="ja">日本語</option>
+      <option value="zh-CN" data-src="zh">中文</option>
+      <option value="es-ES" data-src="es">Español</option>
+      <option value="fr-FR" data-src="fr">Français</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="cont" checked> 연속 인식</label>
+    <label class="chk"><input type="checkbox" id="auto" checked> 자동 번역</label>
+    <label class="chk"><input type="checkbox" id="speak" checked> 자동 읽기</label>
+  </div>
+
+  <div class="bar">
+    <select id="voice"><option>음성 로딩 중...</option></select>
+    <label class="chk">속도 <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1"><span id="rateVal">1.0</span></label>
+    <label class="chk">높이 <input type="range" id="pitch" min="0" max="2" step="0.1" value="1"><span id="pitchVal">1.0</span></label>
+    <button id="replay">전체 다시 읽기</button>
+    <button id="shutup">■ 읽기 중지</button>
+    <button id="copySrc">원문 복사</button>
+    <button id="copyEn">영문 복사</button>
+    <button id="clear">지우기</button>
+  </div>
+
+  <div class="statusrow">
+    <div class="pill" id="micStatus">마이크: 대기 중</div>
+    <div class="pill" id="trStatus">번역기: 확인 중...</div>
+    <div class="pill" id="ttsStatus">음성 출력: 대기</div>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <h2>원문 (음성 인식)</h2>
+      <div class="box" id="srcBox"><span id="final"></span><span id="interim" class="interim"></span></div>
+    </div>
+    <div class="panel">
+      <h2>English (번역 + 읽기)</h2>
+      <div class="box en" id="enBox"></div>
+    </div>
+  </div>
+
+  <div class="meta">
+    · 읽는 동안에는 마이크 인식을 일시 중단해 스피커 소리가 다시 입력되는 <b>에코 루프</b>를 막습니다.<br>
+    · 헤드폰을 사용하면 '자동 읽기'를 켠 채로도 끊김 없이 대화할 수 있습니다.
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const synth = window.speechSynthesis;
+  const startBtn = $('start'), stopBtn = $('stop');
+  const micStatus = $('micStatus'), trStatus = $('trStatus'), ttsStatus = $('ttsStatus');
+  const finalEl = $('final'), interimEl = $('interim');
+  const srcBox = $('srcBox'), enBox = $('enBox');
+
+  /* ---------- 0. 지원 체크 ---------- */
+  if (!SR) {
+    micStatus.textContent = '음성 인식 미지원 (Chrome/Edge 필요)';
+    micStatus.className = 'pill warn';
+    startBtn.disabled = true;
+  }
+  if (!synth) {
+    ttsStatus.textContent = '음성 출력: 미지원 브라우저';
+    ttsStatus.className = 'pill warn';
+    $('speak').checked = false; $('speak').disabled = true;
+  }
+
+  /* ---------- 1. 영어 보이스 목록 ---------- */
+  let voices = [];
+  function loadVoices() {
+    if (!synth) return;
+    voices = synth.getVoices().filter(v => v.lang.toLowerCase().startsWith('en'));
+    if (!voices.length) return;
+    const sel = $('voice');
+    sel.innerHTML = '';
+    voices.forEach((v, i) => {
+      const o = document.createElement('option');
+      o.value = i;
+      o.textContent = `${v.name} (${v.lang})${v.localService ? ' · 로컬' : ''}`;
+      sel.appendChild(o);
+    });
+    // 로컬 en-US 우선 선택
+    const pref = voices.findIndex(v => v.localService && v.lang === 'en-US');
+    sel.value = pref >= 0 ? pref : 0;
+    ttsStatus.textContent = '음성 출력: 대기';
+    ttsStatus.className = 'pill';
+  }
+  if (synth) {
+    loadVoices();
+    synth.onvoiceschanged = loadVoices;
+  }
+
+  $('rate').oninput  = e => $('rateVal').textContent  = (+e.target.value).toFixed(1);
+  $('pitch').oninput = e => $('pitchVal').textContent = (+e.target.value).toFixed(1);
+
+  /* ---------- 2. TTS 큐 + 에코 방지 ---------- */
+  const ttsQueue = [];
+  let speaking = false;
+  let recogPausedByTTS = false;
+
+  function speak(text, span) {
+    if (!synth || !$('speak').checked || !text.trim()) return;
+    ttsQueue.push({ text, span });
+    drainTTS();
+  }
+
+  function pauseRecogForTTS() {
+    // 스피커 출력이 마이크로 되들어가는 것을 방지
+    if (recog && !stopBtn.disabled && !recogPausedByTTS) {
+      recogPausedByTTS = true;
+      suppressRestart = true;
+      try { recog.abort(); } catch (_) {}
+      micStatus.textContent = '마이크: 일시 중단 (읽는 중)';
+      micStatus.className = 'pill';
+    }
+  }
+
+  function resumeRecogAfterTTS() {
+    if (!recogPausedByTTS) return;
+    recogPausedByTTS = false;
+    suppressRestart = false;
+    if (!manualStop) {
+      setTimeout(() => {
+        if (manualStop) return;
+        recog = build();
+        try { recog.start(); } catch (_) {}
+      }, 250);   // 스피커 잔향이 끝날 여유
+    }
+  }
+
+  function drainTTS() {
+    if (speaking || !ttsQueue.length) return;
+    speaking = true;
+    pauseRecogForTTS();
+
+    const job = ttsQueue.shift();
+    const u = new SpeechSynthesisUtterance(job.text);
+    const v = voices[+$('voice').value];
+    if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en-US'; }
+    u.rate  = +$('rate').value;
+    u.pitch = +$('pitch').value;
+
+    u.onstart = () => {
+      ttsStatus.textContent = '음성 출력: 읽는 중...';
+      ttsStatus.className = 'pill spk';
+      if (job.span) job.span.classList.add('speaking');
+    };
+    const done = () => {
+      if (job.span) job.span.classList.remove('speaking');
+      speaking = false;
+      if (ttsQueue.length) {
+        drainTTS();
+      } else {
+        ttsStatus.textContent = '음성 출력: 대기';
+        ttsStatus.className = 'pill';
+        resumeRecogAfterTTS();
+      }
+    };
+    u.onend = done;
+    u.onerror = done;
+
+    synth.speak(u);
+  }
+
+  $('shutup').onclick = () => {
+    ttsQueue.length = 0;
+    if (synth) synth.cancel();
+    speaking = false;
+    document.querySelectorAll('.speaking').forEach(e => e.classList.remove('speaking'));
+    ttsStatus.textContent = '음성 출력: 중지됨';
+    ttsStatus.className = 'pill';
+    resumeRecogAfterTTS();
+  };
+
+  $('replay').onclick = () => {
+    const text = enBox.innerText.trim();
+    if (!text) return;
+    if (synth) synth.cancel();
+    ttsQueue.length = 0; speaking = false;
+    const prev = $('speak').checked;
+    $('speak').checked = true;
+    speak(text, null);
+    $('speak').checked = prev;
+  };
+
+  /* ---------- 3. 내장 번역기 ---------- */
+  let translator = null, translatorLang = null, translatorReady = false;
+  const srcLang = () => $('lang').selectedOptions[0].dataset.src;
+  const hasTranslatorAPI = () => ('Translator' in self) || ('translation' in self);
+
+  async function ensureTranslator() {
+    const from = srcLang();
+    if (translatorReady && translatorLang === from) return translator;
+    if (!hasTranslatorAPI()) {
+      trStatus.textContent = '번역기: 미지원 브라우저';
+      trStatus.className = 'pill warn';
+      return null;
+    }
+    translatorReady = false; translator = null;
+    trStatus.textContent = '번역기: 모델 준비 중...';
+    trStatus.className = 'pill';
+    const opts = {
+      sourceLanguage: from, targetLanguage: 'en',
+      monitor(m) {
+        m.addEventListener('downloadprogress', e => {
+          trStatus.textContent = `번역 모델 다운로드 ${Math.round((e.loaded ?? 0) * 100)}%`;
+        });
+      }
+    };
+    try {
+      if ('Translator' in self) {
+        const avail = await Translator.availability({ sourceLanguage: from, targetLanguage: 'en' });
+        if (avail === 'unavailable') throw new Error(`${from}→en 미지원`);
+        translator = await Translator.create(opts);
+      } else {
+        translator = await self.translation.createTranslator({ sourceLanguage: from, targetLanguage: 'en' });
+      }
+      translatorLang = from; translatorReady = true;
+      trStatus.textContent = `번역기: 준비 완료 (${from} → en)`;
+      trStatus.className = 'pill ok';
+      return translator;
+    } catch (err) {
+      trStatus.textContent = '번역기: 사용 불가 — ' + err.message;
+      trStatus.className = 'pill warn';
+      return null;
+    }
+  }
+
+  /* ---------- 4. 번역 큐 ---------- */
+  const queue = [];
+  let working = false;
+
+  function enqueue(text) {
+    if (!text.trim()) return;
+    const span = document.createElement('span');
+    span.className = 'pending';
+    span.textContent = '…번역 중… ';
+    enBox.appendChild(span);
+    enBox.scrollTop = enBox.scrollHeight;
+    queue.push({ text, span });
+    drain();
+  }
+
+  async function drain() {
+    if (working) return;
+    working = true;
+    while (queue.length) {
+      const job = queue.shift();
+      const tr = await ensureTranslator();
+      if (!tr) { job.span.textContent = '[번역 불가] '; continue; }
+      try {
+        const out = (await tr.translate(job.text)).trim();
+        job.span.textContent = out + ' ';
+        job.span.className = '';
+        speak(out, job.span);              // 번역 즉시 읽기
+      } catch (e) {
+        job.span.textContent = '[오류] ';
+      }
+      enBox.scrollTop = enBox.scrollHeight;
+    }
+    working = false;
+  }
+
+  /* ---------- 5. 음성 인식 ---------- */
+  let recog = null, manualStop = false, suppressRestart = false;
+
+  function build() {
+    const r = new SR();
+    r.lang = $('lang').value;
+    r.continuous = $('cont').checked;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onstart = () => {
+      micStatus.textContent = '마이크: 듣는 중... 말씀하세요';
+      micStatus.className = 'pill rec';
+      startBtn.disabled = true; stopBtn.disabled = false;
+    };
+
+    r.onresult = e => {
+      if (speaking) return;             // 읽는 중 들어온 입력은 무시 (이중 안전장치)
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const txt = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          const sentence = txt.trim();
+          finalEl.textContent += sentence + ' ';
+          srcBox.scrollTop = srcBox.scrollHeight;
+          if ($('auto').checked) enqueue(sentence);
+        } else interim += txt;
+      }
+      interimEl.textContent = interim;
+    };
+
+    r.onerror = e => {
+      if (e.error === 'aborted') return;   // TTS로 인한 의도적 중단
+      const map = { 'not-allowed': '마이크 권한 거부됨', 'no-speech': '음성이 감지되지 않음' };
+      micStatus.textContent = '마이크: ' + (map[e.error] || '오류 ' + e.error);
+      micStatus.className = 'pill warn';
+    };
+
+    r.onend = () => {
+      interimEl.textContent = '';
+      if (suppressRestart) return;         // TTS 재생 중이면 재시작하지 않음
+      if ($('cont').checked && !manualStop) {
+        try { r.start(); return; } catch (_) {}
+      }
+      micStatus.textContent = '마이크: 중지됨';
+      micStatus.className = 'pill';
+      startBtn.disabled = false; stopBtn.disabled = true;
+    };
+    return r;
+  }
+
+  startBtn.onclick = () => {
+    manualStop = false; suppressRestart = false;
+    ensureTranslator();
+    // 사용자 제스처 안에서 synth를 한 번 깨워둔다 (자동재생 정책 회피)
+    if (synth) { const w = new SpeechSynthesisUtterance(''); synth.speak(w); }
+    recog = build();
+    try { recog.start(); } catch (_) {}
+  };
+
+  stopBtn.onclick = () => {
+    manualStop = true; suppressRestart = false;
+    if (recog) recog.stop();
+  };
+
+  $('lang').onchange = () => {
+    translatorReady = false;
+    ensureTranslator();
+    if (recog && !stopBtn.disabled) { manualStop = true; recog.stop(); }
+  };
+
+  $('clear').onclick = () => {
+    finalEl.textContent = ''; interimEl.textContent = ''; enBox.textContent = '';
+  };
+
+  const copy = async (text, label) => {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text.trim());
+      const old = ttsStatus.textContent, oldC = ttsStatus.className;
+      ttsStatus.textContent = label + ' 복사됨';
+      setTimeout(() => { ttsStatus.textContent = old; ttsStatus.className = oldC; }, 1200);
+    } catch (_) {}
+  };
+  $('copySrc').onclick = () => copy(finalEl.textContent, '원문');
+  $('copyEn').onclick  = () => copy(enBox.innerText, '영문');
+
+  // Chrome 장문 읽기 중 멈춤 버그 대응
+  setInterval(() => {
+    if (synth && synth.speaking && !synth.paused) { synth.pause(); synth.resume(); }
+  }, 10000);
+
+  if (!hasTranslatorAPI()) {
+    trStatus.textContent = '번역기: 이 브라우저 미지원 (Chrome 138+ 필요)';
+    trStatus.className = 'pill warn';
+  } else ensureTranslator();
+})();
+</script>
